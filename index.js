@@ -19,7 +19,7 @@ Disco.Client = function(token){
     client.ready = false;
     client._socket = new WebSocket(gateway);
     
-    client._seq = -1;
+    client._seq = null;
     
     client._socket.once('close', hSocketClose);
     client._socket.once('error', hSocketClose);
@@ -50,10 +50,21 @@ Disco.Client = function(token){
             case: 6 //Resume | Send | used to resume a closed connection
                 break;
             case: 7 //Reconnect | Receive | used to tell clients to reconnect to the gateway
+                clearTimeout(client._heartbeat);
+                client._socket.close(1000, 'Reconnect requested by Discord');
                 break;
             case: 8 //Request Guild Members | Send | used to request guild members
                 break;
             case: 9 //Invalid Session | Receive | used to notify client they have an invalid session id
+                if(message.d){
+                    idResume(client);
+                } else {
+                    client._seq = null;
+                    client._sessionID = null;
+                    setTimeout(function() {
+                        idResume(client);
+                    }, Math.random()*4000+1000);
+                }
                 break;
             case: 10 //Hello | Receive | sent immediately after connecting, contains heartbeat and server debug information
                 break;
@@ -76,7 +87,7 @@ Disco.Client = function(token){
 
 Disco.Payloads = {
     HEARTBEAT: function(client) {
-        return {op: 1, d: client.internals.sequence};
+        return {op: 1, d: client._seq};
     },
 }
 
