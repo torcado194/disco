@@ -1,4 +1,5 @@
 const Emitter = require('events').EventEmitter;
+const util = require('util');
 const WebSocket = require('ws');
 const Zlib = require('zlib');
 const request = require('request');
@@ -23,23 +24,23 @@ Disco.Client = function(token){
     client._seq = null;
     
     client.presence = {
-        game: {
-            name: "",
-            type: 0
-        },
+        game: null,
         status: "online",
-        since: Date.now(),
+//        since: Date.now(),
+        since: null,
         afk: false
     }
     
     
     function connect(){
+        client.emit('connecting');
         API('get', Disco.Endpoints.GATEWAY, (err, res, body) => {
             if(err){
                 console.error(err, res);
                 client.emit('error', err, res);
             } else {
-                console.log(res, body);
+                body = JSON.parse(body);
+                console.log(body);
                 if(client._socketOpen){
                     client._socket.close(1001, "Disconnecting");
                 }
@@ -99,11 +100,15 @@ Disco.Client = function(token){
                 }
                 break;
             case 10: //Hello | Receive | sent immediately after connecting, contains heartbeat and server debug information
-                client._hbIntvl = message.heartbeat_interval;
+                client._hbAckd = true;
+                client._hbIntvl = message.d.heartbeat_interval;
+                console.log('heartbeat interval:', client._hbIntvl);
                 client._hb = setInterval(heartbeat, client._hbIntvl);
+                idResume(client);
                 break;
             case 11: //Heartbeat ACK | Receive | sent immediately following a client heartbeat that was received
-                client._hbAckd
+                client._hbAckd = true;
+                console.log('received heartbeat');
                 client.pings.unshift(Date.now() - client._lastHeartbeat);
                 if(client.pings.length > 10){
                     client.pings.pop();
@@ -116,15 +121,22 @@ Disco.Client = function(token){
             
             switch(event){
                 case "READY":
+                    console.log("ready!");
                     client.user = message.d.user;
                     //client.guilds = message.d.guilds;
                     client._sessionID = message.d.session_id;
                     
                     client.ready = true;
                     client.connecting = false;
+                    
+                    getOauth();
                     break;
                 case "GUILD_CREATE":
                     client.guilds.push(message.d);
+                    break;
+                case "MESSAGE_CREATE":
+                    console.log(message);
+                    break;
             }
         }
     }
@@ -133,29 +145,36 @@ Disco.Client = function(token){
         client._lastHb = Date.now();
         if(client._hbAckd){
             client._hbAckd = false;
-            send(client._socket, Disco.Payloads.HEARTBEAT(client));
+            console.log('send heartbeat');
+            send(Disco.Payloads.HEARTBEAT(client));
         } else {
+            console.error('close');
             client._socket.close(1001, "No heartbeat received");
             client._socketOpen = false;
         }
     }
     
     function serializeSocketMessage(data, flags){
+        console.log('flags:', flags);
         flags = flags || {};
-        return flags.binary ? JSON.parse(Zlib.inflateSync(data).toString()) : JSON.parse(data);
+        return (data instanceof Buffer) ? JSON.parse(Zlib.inflateSync(data).toString()) : JSON.parse(data);
     }
     
     function idResume(){
         if(client._seq && client._token && client._sessionID){
+            console.log('resume');
             send(Disco.Payloads.RESUME(client));
         } else {
+            console.log('identify');
             send(Disco.Payloads.IDENTIFY(client));
         }
     }
     
-    function send(){
-        if(client._socket && client._socket.readyState == 1)
-        client._socket.send(JSON.stringify(data));
+    function send(data){
+        if(client._socket && client._socket.readyState == 1){
+            console.log(" > send", data)
+            client._socket.send(JSON.stringify(data));
+        }
     }
     
     function API(method, url, cb){
@@ -171,7 +190,15 @@ Disco.Client = function(token){
         }
         request(options, cb);
     }
+    
+    function getOauth(){
+        API('get', Disco.Endpoints.OAUTH, (err, res, body) => {
+            console.log(body);
+            client._oauth = JSON.parse(body);
+        });
+    }
 }
+util.inherits(Disco.Client, Emitter);
 
 {
     let API = "https://discordapp.com/api",
@@ -182,21 +209,26 @@ Disco.Client = function(token){
         API,
         CDN,
         ME,
-        GATEWAY: API + "/gateway"
+//        GATEWAY: API + "/gateway/bot",
+        GATEWAY: API + "/gateway",
+        OAUTH: API + "/oauth2/applications/@me"
     }
 }
 
 Disco.Payloads = {
     IDENTIFY: client => ({
-        token: client._token,
-        properties: {
-            $os: navigator.platform,
-            $browser: "disco",
-            $device: "disco"
-        },
-        compress: true,
-        large_threshold: LARGE_THRESHOLD,
-        presence: client._presence
+        op: 2,
+        d: {
+            token: client._token,
+            properties: {
+                $os: require('os').platform(),
+                $browser: "disco",
+                $device: "disco"
+            },
+            compress: true,
+            large_threshold: 250,
+            presence: client.presence
+        }
     }),
     RESUME: client => ({
         op: 6, 
@@ -207,17 +239,35 @@ Disco.Payloads = {
         }
     }),
     HEARTBEAT: client => ({
-        return {op: 1, d: client._seq};
+        op: 1, 
+        d: client._seq
     }),
 }
 
 
 
+module.exports = Disco;
 
 
+function arraysEqual(a, b) {
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    if (a.length != b.length) return false;
+
+    for (var i = 0; i < a.length; ++i) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
+}
 
 
-
+process.on('SIGINT', () => {
+    Disco.clients.forEach(i => {
+        i._socket.close(1001, "Disconnecting");
+        console.log('closing');
+    })
+    process.exit();
+})
 
 
 
