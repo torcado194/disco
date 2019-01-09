@@ -38,9 +38,13 @@ Disco.Client = function(token){
                 console.error(err, res);
                 client.emit('error', err, res);
             } else {
+                if(client._socketOpen){
+                    client._socket.close(1001, "Disconnecting");
+                }
                 client._gatewayURL = res.body.url + "/?encoding=json&v=" + Disco.GATEWAY_VERSION;
                 client._socket = new WebSocket(client._gatewayURL);
                 client.connecting = true;
+                client._socketOpen = true;
                 
                 client._socket.once('close', hSocketClose);
                 client._socket.once('error', hSocketClose);
@@ -127,6 +131,7 @@ Disco.Client = function(token){
             send(client._socket, Disco.Payloads.HEARTBEAT(client));
         } else {
             client._socket.close(1001, "No heartbeat received");
+            client._socketOpen = false;
         }
     }
     
@@ -176,7 +181,11 @@ Disco.Payloads = {
     }),
     RESUME: client => ({
         op: 6, 
-        d: client._seq
+        d: {
+            token: client._token,
+            session_id: client._sessionID,
+            seq: client._seq
+        }
     }),
     HEARTBEAT: client => ({
         return {op: 1, d: client._seq};
