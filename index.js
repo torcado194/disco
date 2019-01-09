@@ -1,6 +1,7 @@
 const Emitter = require('events').EventEmitter;
 const WebSocket = require('ws');
 const Zlib = require('zlib');
+const request = require('request');
 
 var Disco = {
     VERSION: "0.0.1",
@@ -33,15 +34,16 @@ Disco.Client = function(token){
     
     
     function connect(){
-        get(Disco.Endpoints.GATEWAY, (err, res) => {
+        API('get', Disco.Endpoints.GATEWAY, (err, res, body) => {
             if(err){
                 console.error(err, res);
                 client.emit('error', err, res);
             } else {
+                console.log(res, body);
                 if(client._socketOpen){
                     client._socket.close(1001, "Disconnecting");
                 }
-                client._gatewayURL = res.body.url + "/?encoding=json&v=" + Disco.GATEWAY_VERSION;
+                client._gatewayURL = body.url + "/?encoding=json&v=" + Disco.GATEWAY_VERSION;
                 client._socket = new WebSocket(client._gatewayURL);
                 client.connecting = true;
                 client._socketOpen = true;
@@ -61,6 +63,7 @@ Disco.Client = function(token){
     
     function hSocketMessage(data, flags){
         let message = serializeSocketMessage(data, flags);
+        console.log(message);
         client.emit('any', message);
         
         switch(message.op){
@@ -114,12 +117,14 @@ Disco.Client = function(token){
             switch(event){
                 case "READY":
                     client.user = message.d.user;
-                    client.guilds = message.d.guilds;
+                    //client.guilds = message.d.guilds;
                     client._sessionID = message.d.session_id;
                     
                     client.ready = true;
                     client.connecting = false;
                     break;
+                case "GUILD_CREATE":
+                    client.guilds.push(message.d);
             }
         }
     }
@@ -151,6 +156,20 @@ Disco.Client = function(token){
     function send(){
         if(client._socket && client._socket.readyState == 1)
         client._socket.send(JSON.stringify(data));
+    }
+    
+    function API(method, url, cb){
+        method = method.toUpperCase();
+        let options = {
+            url,
+            method,
+            headers: {
+                'Authorization': 'Bot ' + client.token,
+                'User-Agent': `DiscordBot (https://github.com/torcado194/disco, ${Disco.VERSION})`,
+                'accept': '*/*'
+            }
+        }
+        request(options, cb);
     }
 }
 

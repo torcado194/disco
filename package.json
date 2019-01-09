@@ -1,0 +1,24 @@
+{
+  "name": "disco",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/torcado194/disco.git"
+  },
+  "author": "torcado",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/torcado194/disco/issues"
+  },
+  "homepage": "https://github.com/torcado194/disco#readme",
+  "dependencies": {
+    "request": "^2.88.0",
+    "ws": "^6.1.2",
+    "zlib": "^1.0.5"
+  }
+}
