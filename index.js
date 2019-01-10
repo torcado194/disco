@@ -1,8 +1,10 @@
-const Emitter = require('events').EventEmitter;
-const util = require('util');
+const Emitter   = require('events').EventEmitter;
+const util      = require('util');
 const WebSocket = require('ws');
-const Zlib = require('zlib');
-const request = require('request');
+const Zlib      = require('zlib');
+const request   = require('request');
+const UDP       = require('dgram');
+const DNS       = require('dns');
 
 var Disco = {
     VERSION: "0.0.1",
@@ -32,6 +34,24 @@ Disco.Client = function(token){
     }
     
     
+    this.voiceConnect = function(guild, channel){
+        if(client.guilds.length === 0){
+            return;
+        }
+        client._voiceState = null;
+        client._voiceServer = null;
+        client.guilds.forEach(i => {
+            if(i.id === guild){
+                i.channels.forEach(j => {
+                    if(j.id === channel){
+                        send(Disco.Payloads.VOICE_UPDATE(guild, channel, false, false));
+                    }
+                });
+            }
+        });
+    }
+    
+    
     function connect(){
         client.emit('connecting');
         API('get', Disco.Endpoints.GATEWAY, (err, res, body) => {
@@ -58,6 +78,7 @@ Disco.Client = function(token){
     connect();
     
     function hSocketClose(code, data){
+        console.error(code, data);
         client.connecting = false;
         client.ready = false;
     }
@@ -90,12 +111,12 @@ Disco.Client = function(token){
                 break;
             case 9: //Invalid Session | Receive | used to notify client they have an invalid session id
                 if(message.d){
-                    idResume(client);
+                    idResume();
                 } else {
                     client._seq = null;
                     client._sessionID = null;
                     setTimeout(function() {
-                        idResume(client);
+                        idResume();
                     }, Math.random()*4000+1000);
                 }
                 break;
@@ -104,12 +125,12 @@ Disco.Client = function(token){
                 client._hbIntvl = message.d.heartbeat_interval;
                 console.log('heartbeat interval:', client._hbIntvl);
                 client._hb = setInterval(heartbeat, client._hbIntvl);
-                idResume(client);
+                idResume();
                 break;
             case 11: //Heartbeat ACK | Receive | sent immediately following a client heartbeat that was received
                 client._hbAckd = true;
                 console.log('received heartbeat');
-                client.pings.unshift(Date.now() - client._lastHeartbeat);
+                client.pings.unshift(Date.now() - client._lastHb);
                 if(client.pings.length > 10){
                     client.pings.pop();
                 }
@@ -135,8 +156,16 @@ Disco.Client = function(token){
                     client.guilds.push(message.d);
                     break;
                 case "MESSAGE_CREATE":
-                    console.log(message);
+                    client.emit('message', message.d);
                     break;
+                case "VOICE_STATE_UPDATE":
+                    if(client._voiceState === null){
+                        client._voiceState = message.d;
+                    }
+                    break;
+                case "VOICE_SERVER_UPDATE":
+                    client._voiceServer = message.d;
+                    joinVoiceChannel();
             }
         }
     }
@@ -197,6 +226,123 @@ Disco.Client = function(token){
             client._oauth = JSON.parse(body);
         });
     }
+    
+    function joinVoiceChannel(){
+        if(client._voiceSocketOpen){
+            client._voiceSocket.close(1001, "Disconnecting");
+        }
+        client._voiceGatewayURL = "wss://" + client._voiceServer.endpoint;
+        client._voiceSocket = new WebSocket(client._voiceGatewayURL);
+        client._voiceSocketOpen = true;
+        
+        client._socket.once('close', hVoiceSocketClose);
+        client._socket.once('error', hVoiceSocketClose);
+        client._socket.on('message', hVoiceSocketMessage);
+        
+        DNS.lookup(client._voiceServer.endpoint, (err, address) => {
+            if(err){
+                console.error(err);
+            } else {
+                client._voiceAddress = address;
+                client._udpSocket = UDP.createSocket("udp4");
+                client._udpSocket.bind({exclusive: true});
+                
+                client._udpSocket.once('message', udpDiscoverResponse);
+            }
+        });
+    }
+    
+    function hVoiceSocketClose(code, data){
+        console.error(code, data);
+        client._voiceSocketOpen = false;
+    }
+    
+    function hVoiceSocketMessage(data, flags){
+        let message = serializeSocketMessage(data, flags);
+        console.log("voice:", message);
+        
+        switch(message.op){
+            case 2: //Ready 
+                /*{
+                    "ssrc": 1,
+                    "ip": "127.0.0.1",
+                    "port": 1234,
+                    "modes": ["plain", "xsalsa20_poly1305"],
+                    "heartbeat_interval": 1
+                }*/
+                client._voiceServerOptions = message.d;
+                //discover UDP ip/port
+                let ssrc = client._voiceServerOptions.ssrc;
+                let udpDiscoverPacket = (new Buffer(70)).writeUIntBE(ssrc, 0, 4);
+                //send discover buffer
+                client._voiceIP = null;
+                client._voicePort = null;
+                client._udpSocket.send(udpDiscoverPacket, 0, udpDiscoverPacket.length, client._voiceServerOptions.port, client._voiceAddress, (err) => {
+                    if(err){
+                        console.error(err);
+                        leaveVoiceChannel();
+                    }
+                });
+                break;
+            case 4: //Session description
+                /*let v = {
+                    "mode": "xsalsa20_poly1305",
+                    "secret_key": [ ...251, 100, 11...]
+                }*/
+                client._voiceSession = message.d;
+                break;
+            case 6: //Heartbeat ACK 
+                client._voiceHbAckd = true;
+                console.log('received heartbeat');
+                //client.pings.unshift(Date.now() - client._voiceLastHb);
+                //if(client.pings.length > 10){
+                //    client.pings.pop();
+                //}
+                break;
+            case 8: //Hello 
+                client._voiceHbAckd = true;
+                client._voiceHbIntvl = message.d.heartbeat_interval;
+                console.log('voice heartbeat interval:', client._voiceHbIntvl);
+                client._voiceHb = setInterval(voiceHeartbeat, client._voiceHbIntvl);
+                voiceIdentify();
+                break;
+        }
+    }
+    
+    function voiceHeartbeat(){
+        client._lastVoiceHb = Date.now();
+        if(client._voiceHbAckd){
+            client._voiceHbAckd = false;
+            console.log('send heartbeat');
+            send(Disco.VoicePayloads.HEARTBEAT(client));
+        } else {
+            console.error('close');
+            client._voiceSocket.close(1001, "No heartbeat received");
+            client._voiceSocketOpen = false;
+        }
+    }
+    
+    function voiceIdentify(){
+        console.log('voice identify');
+        send(Disco.VoicePayloads.IDENTIFY(client));
+    }
+    
+    function udpDiscoverResponse(msg){
+        let buffArr = JSON.parse(JSON.stringify(msg)).data;
+        let IP = "";
+        let port = 0;
+        for (var i = 4; i < buffArr.indexOf(0, i); i++) {
+            IP += String.fromCharCode(buffArr[i]);
+        }
+        port = msg.readUIntLE(msg.length - 2, 2).toString(10);
+        
+        client._voiceIP = IP;
+        client._voicePort = port;
+        
+        send(Disco.VoicePayloads.PROTOCOL(client));
+    }
+    
+    
 }
 util.inherits(Disco.Client, Emitter);
 
@@ -231,7 +377,7 @@ Disco.Payloads = {
         }
     }),
     RESUME: client => ({
-        op: 6, 
+        op: 6,
         d: {
             token: client._token,
             session_id: client._sessionID,
@@ -239,11 +385,45 @@ Disco.Payloads = {
         }
     }),
     HEARTBEAT: client => ({
-        op: 1, 
+        op: 1,
         d: client._seq
     }),
+    VOICE_UPDATE: (guild_id, channel_id, self_mute, self_deaf) => ({
+        op: 4,
+        d: {
+            guild_id,
+            channel_id,
+            self_mute,
+            self_deaf
+        }
+    }),
 }
-
+Disco.VoicePayloads = {
+    IDENTIFY: client => ({
+        op: 0,
+        d: {
+            server_id: client._voiceState.guild_id,
+            user_id: client._voiceState.user_id,
+            session_id: client._voiceState.session_id,
+            token: client._voiceServer.token
+        }
+    }),
+    HEARTBEAT: client => ({
+        op: 3,
+        d: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+    }),
+    PROTOCOL: client => ({
+        op: 1,
+        d: {
+            protocol: "udp",
+            data: {
+                address: client._voiceIP,
+                port: client._voicePort,
+                mode: "xsalsa20_poly1305"
+            }
+        }
+    }),
+}
 
 
 module.exports = Disco;
