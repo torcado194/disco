@@ -17,7 +17,10 @@
   },
   "homepage": "https://github.com/torcado194/disco#readme",
   "dependencies": {
+    "cjopus": "0.0.4",
+    "opusscript": "0.0.6",
     "request": "^2.88.0",
+    "tweetnacl": "^1.0.0",
     "ws": "^6.1.2",
     "zlib": "^1.0.5"
   }

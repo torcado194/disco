@@ -5,6 +5,11 @@ const Zlib      = require('zlib');
 const request   = require('request');
 const UDP       = require('dgram');
 const DNS       = require('dns');
+//const Opus      = require('opusscript');
+const Opus      = require('cjopus');
+const { spawn } = require('child_process');
+const NACL      = require('tweetnacl');
+const fs        = require('fs');
 
 var Disco = {
     VERSION: "0.0.1",
@@ -24,6 +29,14 @@ Disco.Client = function(token){
     client.pings = [];
     client._token = token;
     client._seq = null;
+    
+    client._voiceConnected = false;
+    client._audioStream = {};
+    client._audioStream._sequence  = 0;
+    client._audioStream._timestamp = 0;
+    
+    client._audioEncoder = new Opus.OpusEncoder( 48000, 2 );
+//    client._audioEncoder = new Opus( 48000, 2, Opus.Application.AUDIO );
     
     client.presence = {
         game: null,
@@ -53,6 +66,155 @@ Disco.Client = function(token){
                 });
             }
         });
+    }
+    
+    this.playAudioFile = function(filepath){
+        if(client._voiceConnected){
+            console.log('encode audio file');
+            let ffmpeg = spawn('ffmpeg', [
+//                '-hide_banner',
+//                '-loglevel', 'error',
+//                '-i', 'pipe:0',
+//                '-map', '0:a',
+//                '-compression_level', '10',
+                '-i', filepath,
+                '-f', 's16le',
+                '-ar', '48000',
+                '-ac', 2,
+                '-vbr', 'off',
+//                '-acodec', 'libopus',
+                'pipe:1'
+//                '_spawnedAudio.ogg'
+//            ]);
+            ], {stdio: ['pipe', 'pipe', 'ignore']});
+            
+            ffmpeg.stdout.once('end', function() {
+                console.log('audio file end');
+                ffmpeg.kill();
+                sendVoice(Disco.VoicePayloads.SPEAKING(client, false));
+                client._audioStream._reading = false;
+            });
+            ffmpeg.stdout.once('error', function(e) {
+                ffmpeg.stdout.emit('end');
+                console.log('audio file error', e);
+            });
+            /*ffmpeg.stdout.on('data', (data) => {
+                console.log('data:::');
+                console.log(data);
+            });*/
+            /*ffmpeg.on('data', (data) => {
+                console.log('data:::');
+                console.log(data);
+            });*/
+            ffmpeg.stdout.on('readable', function() {
+                if (client._audioStream._reading){
+                    return;
+                }
+                /*console.log('data:::');
+                setInterval(function(){
+                    if(client._audioStream._reading){
+                        console.log(ffmpeg.stdout.read(320));
+                    }
+                }, 20);*/
+                console.log('audio file read');
+                client._audioStream._reading = true;
+                sendVoice(Disco.VoicePayloads.SPEAKING(client, true));
+                client._audioStream._startTime = Date.now();
+                client.__output = fs.createWriteStream('_output14.ogg');
+//                ffmpeg.stdout.pipe(client.__output);
+                sendAudioStream(ffmpeg.stdout, 0);
+//                console.log(ffmpeg.stdout.read().toString());
+            });
+            
+        }
+    }
+    
+    function sendAudioStream(stream, cnt){
+//        let frameSize = 48000 * 20 / 1000;
+//        let frameSize = 320;
+        let frameSize = 1920 * 2;
+//        let data = stream.read(320 * 8) || stream.read();
+        let data = stream.read(frameSize) || stream.read();
+        let buffer = new Buffer([0xF8, 0xFF, 0xFE]);
+        
+        
+        if((data && data.length === frameSize)){
+            buffer = client._audioEncoder.encode(data);
+            //buffer = data;
+        }
+        
+        //console.log(buffer)
+        
+        if (!data) {
+            sendVoice(Disco.VoicePayloads.SPEAKING(client, false));
+            client._audioStream._reading = false;
+            
+            client.__output.close();
+            
+            let decoded = client._audioEncoder.decode(fs.readFileSync('_output14.ogg'));
+            //let decoded = fs.readFileSync('_output13.ogg');
+            fs.writeFileSync('_output_decoded14.ogg', decoded);
+            return;
+        }
+        
+        client.__output.write(buffer);
+        
+        let bufferTime = 40;
+        setTimeout(function(){
+//            console.log('send stream');
+//            console.log(stream);
+//            console.log(stream.read());
+        
+        client._audioStream._sequence  = (client._audioStream._sequence  + 1  ) < 0xFFFF     ? client._audioStream._sequence  + 1   : 0;
+        client._audioStream._timestamp = (client._audioStream._timestamp + 960) < 0xFFFFFFFF ? client._audioStream._timestamp + 960 : 0;
+        
+        let header = new Buffer(12), 
+            nonce = new Uint8Array(24), 
+            output = new Buffer(2048);
+        
+        header[0] = 0x80;
+        header[1] = 0x78;
+            
+            console.log(client._audioStream._sequence);
+            console.log(client._audioStream._timestamp);
+            console.log(client._voiceServerOptions.ssrc);
+        
+        header.writeUIntBE(client._audioStream._sequence, 2, 2);
+        header.writeUIntBE(client._audioStream._timestamp, 4, 4);
+        header.writeUIntBE(client._voiceServerOptions.ssrc, 8, 4);
+        
+        nonce.set(header);
+        
+        let encrypted = new Buffer(
+            NACL.secretbox(
+                new Uint8Array(buffer),
+                nonce,
+                client._voiceSession.secret_key
+            )
+        );
+        
+        header.copy(output);
+        encrypted.copy(output, 12);
+        
+        //let audioPacket = AudioCB.VoicePacket(buffer, client._voiceServerOptions.ssrc, client._audioStream._sequence, client._audioStream._timestamp, client._voiceSession.secret_key);
+        
+        let packet = output.slice(0, header.length + encrypted.length);
+        
+        
+        console.log('send audio packet');
+//        console.log('send audio packet', packet);
+//            console.log(packet.slice(-14))
+        //client._udpSocket.send(packet, 0, packet.length, client._voiceServerOptions.port, client._voiceAddress);
+        
+            //client.__output.write(buffer);
+            
+        //setTimeout(function(){
+//            console.log(data);
+//            process.stdout.write(stream);
+//            client._udpSocket.send()
+            sendAudioStream(stream, cnt + 1);
+        }, 20 + ( (client._audioStream._startTime + cnt * 20) - Date.now() ));
+        console.log('delay:', 20 + ( (client._audioStream._startTime + cnt * 20) - Date.now() ));
     }
     
     
@@ -270,6 +432,7 @@ Disco.Client = function(token){
     }
     
     function leaveVoiceChannel(){
+        client._voiceConnected = false;
         send(Disco.Payloads.UPDATE_VOICE(client.channels[channelID].guild_id, null, false, false));
     }
     
@@ -317,6 +480,8 @@ Disco.Client = function(token){
                     "audio_codec": 'opus'
                 }*/
                 client._voiceSession = message.d;
+                client._voiceSession.secret_key = new Uint8Array(client._voiceSession.secret_key);
+                client._voiceConnected = true;
                 break;
             case 6: //Heartbeat ACK 
                 client._voiceHbAckd = true;
@@ -449,6 +614,14 @@ Disco.VoicePayloads = {
                 port: Number.parseInt(client._voicePort),
                 mode: "xsalsa20_poly1305"
             }
+        }
+    }),
+    SPEAKING: (client, on) => ({
+        op: 5,
+        d: {
+            speaking: on,
+            delay: 0,
+            ssrc: client._voiceServerOptions.ssrc
         }
     }),
 }
