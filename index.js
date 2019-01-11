@@ -40,9 +40,13 @@ Disco.Client = function(token){
         }
         client._voiceState = null;
         client._voiceServer = null;
+        console.log(client.guilds);
+        console.log(client.guilds[0].id);
         client.guilds.forEach(i => {
             if(i.id === guild){
+                console.log(guild);
                 i.channels.forEach(j => {
+                    console.log(channel);
                     if(j.id === channel){
                         send(Disco.Payloads.VOICE_UPDATE(guild, channel, false, false));
                     }
@@ -165,6 +169,7 @@ Disco.Client = function(token){
                     break;
                 case "VOICE_SERVER_UPDATE":
                     client._voiceServer = message.d;
+                    client._voiceServer.endpoint = client._voiceServer.endpoint.split(':')[0];
                     joinVoiceChannel();
             }
         }
@@ -206,6 +211,13 @@ Disco.Client = function(token){
         }
     }
     
+    function sendVoice(data){
+        if(client._voiceSocket && client._voiceSocket.readyState == 1){
+            console.log(" > send voice", data)
+            client._voiceSocket.send(JSON.stringify(data));
+        }
+    }
+    
     function API(method, url, cb){
         method = method.toUpperCase();
         let options = {
@@ -232,28 +244,39 @@ Disco.Client = function(token){
             client._voiceSocket.close(1001, "Disconnecting");
         }
         client._voiceGatewayURL = "wss://" + client._voiceServer.endpoint;
-        client._voiceSocket = new WebSocket(client._voiceGatewayURL);
-        client._voiceSocketOpen = true;
-        
-        client._socket.once('close', hVoiceSocketClose);
-        client._socket.once('error', hVoiceSocketClose);
-        client._socket.on('message', hVoiceSocketMessage);
         
         DNS.lookup(client._voiceServer.endpoint, (err, address) => {
             if(err){
-                console.error(err);
+                console.error("dns error", err);
             } else {
                 client._voiceAddress = address;
+                console.log("create udp socket");
                 client._udpSocket = UDP.createSocket("udp4");
                 client._udpSocket.bind({exclusive: true});
                 
                 client._udpSocket.once('message', udpDiscoverResponse);
+                console.log("create udp socket");
             }
         });
+        
+        console.log("open voice socket");
+        client._voiceSocket = new WebSocket(client._voiceGatewayURL);
+        client._voiceSocketOpen = true;
+        
+        client._voiceSocket.once('close', hVoiceSocketClose);
+        client._voiceSocket.once('error', hVoiceSocketClose);
+        client._voiceSocket.on('message', hVoiceSocketMessage);
+        
+    }
+    
+    function leaveVoiceChannel(){
+        send(Disco.Payloads.UPDATE_VOICE(client.channels[channelID].guild_id, null, false, false));
     }
     
     function hVoiceSocketClose(code, data){
+        console.log("b");
         console.error(code, data);
+        console.log("b");
         client._voiceSocketOpen = false;
     }
     
@@ -270,10 +293,12 @@ Disco.Client = function(token){
                     "modes": ["plain", "xsalsa20_poly1305"],
                     "heartbeat_interval": 1
                 }*/
+                console.log('voice ready!');
                 client._voiceServerOptions = message.d;
                 //discover UDP ip/port
                 let ssrc = client._voiceServerOptions.ssrc;
-                let udpDiscoverPacket = (new Buffer(70)).writeUIntBE(ssrc, 0, 4);
+                let udpDiscoverPacket = new Buffer(70);
+                udpDiscoverPacket.writeUIntBE(ssrc, 0, 4);
                 //send discover buffer
                 client._voiceIP = null;
                 client._voicePort = null;
@@ -287,7 +312,9 @@ Disco.Client = function(token){
             case 4: //Session description
                 /*let v = {
                     "mode": "xsalsa20_poly1305",
-                    "secret_key": [ ...251, 100, 11...]
+                    "secret_key": [ ...251, 100, 11...],
+                    "media_session_id": '2a1484cb287fd258fa0638eb71e2e50a',
+                    "audio_codec": 'opus'
                 }*/
                 client._voiceSession = message.d;
                 break;
@@ -314,7 +341,7 @@ Disco.Client = function(token){
         if(client._voiceHbAckd){
             client._voiceHbAckd = false;
             console.log('send heartbeat');
-            send(Disco.VoicePayloads.HEARTBEAT(client));
+            sendVoice(Disco.VoicePayloads.HEARTBEAT(client));
         } else {
             console.error('close');
             client._voiceSocket.close(1001, "No heartbeat received");
@@ -324,10 +351,11 @@ Disco.Client = function(token){
     
     function voiceIdentify(){
         console.log('voice identify');
-        send(Disco.VoicePayloads.IDENTIFY(client));
+        sendVoice(Disco.VoicePayloads.IDENTIFY(client));
     }
     
     function udpDiscoverResponse(msg){
+        console.log('udp discover response');
         let buffArr = JSON.parse(JSON.stringify(msg)).data;
         let IP = "";
         let port = 0;
@@ -339,7 +367,7 @@ Disco.Client = function(token){
         client._voiceIP = IP;
         client._voicePort = port;
         
-        send(Disco.VoicePayloads.PROTOCOL(client));
+        sendVoice(Disco.VoicePayloads.PROTOCOL(client));
     }
     
     
@@ -418,7 +446,7 @@ Disco.VoicePayloads = {
             protocol: "udp",
             data: {
                 address: client._voiceIP,
-                port: client._voicePort,
+                port: Number.parseInt(client._voicePort),
                 mode: "xsalsa20_poly1305"
             }
         }
@@ -444,8 +472,10 @@ function arraysEqual(a, b) {
 process.on('SIGINT', () => {
     Disco.clients.forEach(i => {
         i._socket.close(1001, "Disconnecting");
+        i._voiceSocket.close(1001, "Disconnecting");
         console.log('closing');
-    })
+    });
+    //leaveVoiceChannel()
     process.exit();
 })
 

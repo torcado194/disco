@@ -9,8 +9,9 @@ console.log(bot);
 
 bot.on('message', msg => {
     console.log(msg.content);
-    
-    if(message === '$connect'){
-        bot.voiceConnect("227172502114271234");
+    console.log(msg.content === "$connect");
+    if(msg.content === '$connect'){
+        bot.voiceConnect("227172502114271233", "227172502114271234"); //test
+        bot.voiceConnect("120888645178753024", "336349159114145792"); //drawsquad
     }
 });
